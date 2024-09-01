@@ -9,6 +9,7 @@ const thaiDatabase = require('./thai_database.json');
 const app = express();
 const port = 3000;
 
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
@@ -363,6 +364,21 @@ app.delete('/appointments/:id', async (req, res) => {
         res.status(200).json({ message: 'Appointment deleted successfully' });
     } catch (err) {
         console.error('Error deleting appointment:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+app.put('/appointments/:id', async (req, res) => {
+    const appointmentId = req.params.id;
+    const { new_date } = req.body;  // รับวันที่นัดหมายใหม่จาก request body
+
+    try {
+        // อัปเดตวันที่นัดหมาย
+        await db.none('UPDATE appointments SET appointment_date = $1 WHERE id = $2', [new_date, appointmentId]);
+        
+        res.status(200).json({ message: 'Appointment date updated successfully' });
+    } catch (err) {
+        console.error('Error updating appointment date:', err);
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
