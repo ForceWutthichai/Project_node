@@ -9,6 +9,7 @@ const thaiDatabase = require('./thai_database.json');
 const app = express();
 const port = 3000;
 
+
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
@@ -163,16 +164,22 @@ app.put('/profile/:id', async (req, res) => {
     const updatedData = req.body;
 
     try {
-        // Remove dashes from id_card and phone before saving to the database
+        // ลบขีดใน id_card และ phone ก่อนบันทึกลงฐานข้อมูล
         updatedData.id_card = updatedData.id_card.replace(/-/g, '');
         updatedData.phone = updatedData.phone.replace(/-/g, '');
 
         await db.tx(async t => {
-            // Get the old id_card before updating
-            const oldData = await t.oneOrNone('SELECT id_card FROM patient WHERE id = $1', [patientId]);
-            const oldIdCard = oldData.id_card;
+            // ดึงข้อมูลเก่าของ id_card และ phone
+            const oldData = await t.oneOrNone('SELECT id_card, phone FROM patient WHERE id = $1', [patientId]);
 
-            // Update patient information
+            if (!oldData) {
+                return res.status(404).json({ message: 'Patient not found' });
+            }
+
+            const oldIdCard = oldData.id_card;
+            const oldPhone = oldData.phone;
+
+            // อัปเดตข้อมูลผู้ป่วย
             await t.none(`
                 UPDATE patient
                 SET
@@ -192,23 +199,23 @@ app.put('/profile/:id', async (req, res) => {
                 WHERE id = $[patientId]
             `, { ...updatedData, patientId });
 
-            // Update users information (id_card) ถ้ามีการเปลี่ยนแปลง
-            if (oldIdCard !== updatedData.id_card) {
+            // อัปเดตข้อมูลผู้ใช้ (id_card และ phone) ถ้ามีการเปลี่ยนแปลง
+            if (oldIdCard !== updatedData.id_card || oldPhone !== updatedData.phone) {
                 await t.none(`
                     UPDATE users
-                    SET id_card = $[id_card]
-                    WHERE id_card = $[oldIdCard]
-                `, { id_card: updatedData.id_card, oldIdCard });
+                    SET id_card = $[id_card], phone = $[phone]
+                    WHERE id_card = $[oldIdCard] OR phone = $[oldPhone]
+                `, { id_card: updatedData.id_card, phone: updatedData.phone, oldIdCard, oldPhone });
             }
 
-            // Check if password needs to be updated
+            // ตรวจสอบว่าต้องอัปเดตรหัสผ่านหรือไม่
             if (updatedData.password) {
                 const hashedPassword = await bcrypt.hash(updatedData.password, 10);
                 await t.none(`
                     UPDATE users
                     SET password = $[hashedPassword]
-                    WHERE id_card = $[id_card]
-                `, { hashedPassword, id_card: updatedData.id_card });
+                    WHERE id_card = $[id_card] OR phone = $[phone]
+                `, { hashedPassword, id_card: updatedData.id_card, phone: updatedData.phone });
             }
 
             res.status(200).json({ message: 'Profile and user updated successfully' });
@@ -218,7 +225,6 @@ app.put('/profile/:id', async (req, res) => {
         res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
 });
-
 
 app.put('/profile/:id/health', async (req, res) => {
     const patientId = req.params.id;
@@ -283,14 +289,21 @@ app.put('/profile/:id/health', async (req, res) => {
 
 app.post('/evaluation-results', async (req, res) => {
     const { user_id, program_name, result_program, appointment_date } = req.body;
+
+    if (!user_id || !program_name || !result_program || !appointment_date) {
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+
     try {
         const result = await db.one(`
             INSERT INTO appointments (user_id, program_name, result_program, appointment_date) 
             VALUES ($1, $2, $3, $4) 
             RETURNING id`, [user_id, program_name, result_program, appointment_date]);
+
         res.status(201).json({ id: result.id });
     } catch (err) {
-        res.status(500).json({ message: 'Error creating evaluation result', error: err.message });
+        console.error('Error creating evaluation result:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
 });
 
@@ -355,47 +368,80 @@ app.delete('/appointments/:id', async (req, res) => {
     }
 });
 
+app.put('/appointments/:id', async (req, res) => {
+    const appointmentId = req.params.id;
+    const { new_date } = req.body;  // รับวันที่นัดหมายใหม่จาก request body
+
+    try {
+        // อัปเดตวันที่นัดหมาย
+        await db.none('UPDATE appointments SET appointment_date = $1 WHERE id = $2', [new_date, appointmentId]);
+        
+        res.status(200).json({ message: 'Appointment date updated successfully' });
+    } catch (err) {
+        console.error('Error updating appointment date:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 app.put('/change-password/:id', async (req, res) => {
     const userId = req.params.id;
     const { new_password } = req.body;
-  
+
     try {
-      const hashedPassword = await bcrypt.hash(new_password, 10);
-  
-      await db.tx(async t => {
-        // อัปเดตรหัสผ่านในตาราง users
-        await t.none(`
-          UPDATE users
-          SET password = $1
-          WHERE id_card = (
-            SELECT id_card FROM patient WHERE id = $2
-          )
-        `, [hashedPassword, userId]);
-  
-        // อัปเดตรหัสผ่านในตาราง patient
-        await t.none(`
-          UPDATE patient
-          SET password = $1
-          WHERE id = $2
-        `, [hashedPassword, userId]);
-  
-        // บันทึกประวัติการแก้ไขรหัสผ่านในตาราง password_changes
-        await t.none(`
-          INSERT INTO password_changes (user_id, patient_id)
-          VALUES (
-            (SELECT id FROM users WHERE id_card = (SELECT id_card FROM patient WHERE id = $1)),
-            $1
-          )
-        `, [userId]);
-  
-        res.status(200).json({ message: 'Password updated successfully' });
-      });
+        const hashedPassword = await bcrypt.hash(new_password, 10);
+
+        await db.tx(async t => {
+            // ดึงข้อมูล id_card และ phone ของผู้ป่วยตาม userId
+            const patient = await t.one(`
+                SELECT id_card, phone FROM patient WHERE id = $1
+            `, [userId]);
+
+            // อัปเดตรหัสผ่านในตาราง users โดยใช้ id_card หรือ phone
+            await t.none(`
+                UPDATE users
+                SET password = $1
+                WHERE id_card = $2 OR phone = $3
+            `, [hashedPassword, patient.id_card, patient.phone]);
+
+            // อัปเดตรหัสผ่านในตาราง patient
+            await t.none(`
+                UPDATE patient
+                SET password = $1
+                WHERE id = $2
+            `, [hashedPassword, userId]);
+
+            // บันทึกประวัติการแก้ไขรหัสผ่านในตาราง password_changes
+            await t.none(`
+                INSERT INTO password_changes (user_id, patient_id)
+                VALUES (
+                    (SELECT id FROM users WHERE id_card = $1 OR phone = $2),
+                    $3
+                )
+            `, [patient.id_card, patient.phone, userId]);
+
+            res.status(200).json({ message: 'Password updated successfully' });
+        });
     } catch (err) {
-      console.error('Error updating password:', err);
-      res.status(500).json({ message: 'Internal Server Error', error: err.message });
+        console.error('Error updating password:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
     }
-  });
-  
+});
+
+app.get('/evaluation-results/count/:program_name', async (req, res) => {
+    const programName = req.params.program_name;
+    const today = new Date().toISOString().split('T')[0]; // วันที่วันนี้ในรูปแบบ 'YYYY-MM-DD'
+    try {
+        const { count } = await db.one(
+            'SELECT COUNT(*) FROM appointments WHERE program_name = $1 AND appointment_date = $2',
+            [programName, today]
+        );
+        res.json({ count: parseInt(count) });
+    } catch (err) {
+        console.error('Error counting evaluation results:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 app.get('/provinces', (req, res) => {
     const provinces = [...new Set(thaiDatabase.map(data => data.province))]; // ดึงจังหวัดทั้งหมดจากข้อมูล
     res.json(provinces);
