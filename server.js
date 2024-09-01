@@ -427,6 +427,21 @@ app.put('/change-password/:id', async (req, res) => {
     }
 });
 
+app.get('/evaluation-results/count/:program_name', async (req, res) => {
+    const programName = req.params.program_name;
+    const today = new Date().toISOString().split('T')[0]; // วันที่วันนี้ในรูปแบบ 'YYYY-MM-DD'
+    try {
+        const { count } = await db.one(
+            'SELECT COUNT(*) FROM appointments WHERE program_name = $1 AND appointment_date = $2',
+            [programName, today]
+        );
+        res.json({ count: parseInt(count) });
+    } catch (err) {
+        console.error('Error counting evaluation results:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 app.get('/provinces', (req, res) => {
     const provinces = [...new Set(thaiDatabase.map(data => data.province))]; // ดึงจังหวัดทั้งหมดจากข้อมูล
     res.json(provinces);
