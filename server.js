@@ -452,7 +452,7 @@ app.get('/districts/:province', (req, res) => {
     const districts = [...new Set(thaiDatabase.filter(data => data.province === province).map(data => data.amphoe))]; // ดึงอำเภอจากจังหวัดที่เลือก
     res.json(districts);
 });
-  
+
 app.get('/subdistricts/:district', (req, res) => {
     const { district } = req.params;
     const subdistricts = thaiDatabase.filter(data => data.amphoe === district).map(data => data.district); // ดึงตำบลจากอำเภอที่เลือก
