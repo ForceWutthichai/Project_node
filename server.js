@@ -68,6 +68,22 @@ app.post('/create-patient', async (req, res) => {
     }
 });
 
+app.get('/patients', async (req, res) => {
+    try {
+        // ดึงข้อมูลผู้ป่วยทั้งหมดจากฐานข้อมูล
+        const patients = await db.any(`
+            SELECT 
+                id, title_name, first_name, last_name, id_card, phone, gender, date_birth,
+                house_number, street, village, subdistrict, district, province, weight, height, waist,password 
+            FROM patient
+        `);
+        
+        res.status(200).json(patients); // ส่งข้อมูลกลับในรูปแบบ JSON
+    } catch (err) {
+        console.error('Error fetching patients:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
 
 function calculateBMI(weight, height) {
     return (weight / ((height / 100) * (height / 100))).toFixed(2);
