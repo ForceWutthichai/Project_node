@@ -534,11 +534,19 @@ app.post('/admin/create', async (req, res) => {
     const { username, password } = req.body;
 
     try {
+        // ตรวจสอบว่ามี username อยู่แล้วหรือไม่
+        const existingAdmin = await db.oneOrNone('SELECT * FROM admins_web WHERE username = $1', [username]);
+
+        if (existingAdmin) {
+            return res.status(400).json({ message: 'Username already exists' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // เก็บทั้งรหัสผ่านที่เข้ารหัสและรหัสผ่านจริง
         await db.none(`
-            INSERT INTO admins_web(username, password) 
-            VALUES ($1, $2)`, [username, hashedPassword]);
+            INSERT INTO admins_web(username, password, plain_password) 
+            VALUES ($1, $2, $3)`, [username, hashedPassword, password]);
 
         res.status(201).json({ message: 'Admin created successfully' });
     } catch (err) {
@@ -566,13 +574,14 @@ app.post('/admin/login', async (req, res) => {
 
 app.get('/admin/list', async (req, res) => {
     try {
-        const admins = await db.any('SELECT id, username, created_at FROM admins_web ORDER BY created_at DESC');
-        res.status(200).json(admins);
+        const admins = await db.any('SELECT id, username, plain_password FROM admins_web ORDER BY created_at DESC');
+        res.status(200).json(admins);  
     } catch (err) {
-        console.error('Error fetching admins_web:', err);
+        console.error('Error fetching admins:', err);
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
+
 
 app.delete('/admin/:id', async (req, res) => {
     const adminId = req.params.id;
