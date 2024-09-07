@@ -9,10 +9,44 @@ const thaiDatabase = require('./thai_database.json');
 const app = express();
 const port = 3000;
 
+const WebSocket = require('ws');
+const wsServer = new WebSocket.Server({ port: 8080 });
+const clients = {};
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
+
+wsServer.on('connection', (ws, req) => {
+    const userId = req.url.split('/').pop();  // ดึง user ID จาก URL
+    clients[userId] = ws;
+
+    ws.on('close', () => {
+        delete clients[userId]; // ลบการเชื่อมต่อเมื่อปิด
+    });
+});
+
+// ฟังก์ชันส่งการแจ้งเตือน
+function sendNotification(userId, message) {
+    if (clients[userId]) {
+        clients[userId].send(JSON.stringify({ notification: message }));
+    } else {
+        console.log(`User ${userId} not connected`);
+    }
+}
+
+// ตรวจสอบการนัดหมายที่จะถึงในทุกๆ ชั่วโมง
+setInterval(async () => {
+    const upcomingAppointments = await db.any(`
+        SELECT user_id, program_name, appointment_date
+        FROM appointments
+        WHERE appointment_date::date = (NOW() + INTERVAL '1 day')::date
+    `);
+
+    upcomingAppointments.forEach(appointment => {
+        sendNotification(appointment.user_id, `คุณมีการนัดหมาย ${appointment.program_name} ที่จะถึงในวันพรุ่งนี้`);
+    });
+}, 3600000);
 
 app.get('/health', async (req, res) => {
     try {
@@ -68,6 +102,22 @@ app.post('/create-patient', async (req, res) => {
     }
 });
 
+app.get('/patients', async (req, res) => {
+    try {
+        // ดึงข้อมูลผู้ป่วยทั้งหมดจากฐานข้อมูล
+        const patients = await db.any(`
+            SELECT 
+                id, title_name, first_name, last_name, id_card, phone, gender, date_birth,
+                house_number, street, village, subdistrict, district, province, weight, height, waist,password 
+            FROM patient
+        `);
+        
+        res.status(200).json(patients); // ส่งข้อมูลกลับในรูปแบบ JSON
+    } catch (err) {
+        console.error('Error fetching patients:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
 
 function calculateBMI(weight, height) {
     return (weight / ((height / 100) * (height / 100))).toFixed(2);
@@ -356,6 +406,44 @@ app.get('/appointments-date-all/:user_id', async (req, res) => {
     }
 });
 
+app.post('/create-appointment-status', async (req, res) => {
+    const { user_id, program_name, result_program, appointment_date, is_confirmed } = req.body;
+    
+    if (!user_id || !program_name || !appointment_date) {
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+    try {
+        // Insert into the appointment_status table
+        const result = await db.one(`
+            INSERT INTO appointment_status (user_id, program_name, result_program, appointment_date, is_confirmed)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        `, [user_id, program_name, result_program, appointment_date, is_confirmed]);
+
+        res.status(201).json({ id: result.id });
+    } catch (err) {
+        console.error('Error creating appointment status:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
+app.get('/completed-appointments/:user_id', async (req, res) => {
+    const userId = req.params.user_id; // ดึง user_id จาก URL
+    try {
+        // ค้นหาข้อมูลการนัดหมายที่ยืนยันการตรวจแล้ว
+        const completedAppointments = await db.any(`
+            SELECT id, program_name, appointment_date
+            FROM appointment_status
+            WHERE user_id = $1 ;
+        `, [userId]);
+
+        res.status(200).json(completedAppointments);
+    } catch (err) {
+        console.error('Error fetching completed appointments:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
 app.delete('/appointments/:id', async (req, res) => {
     const appointmentId = req.params.id;
 
@@ -367,6 +455,19 @@ app.delete('/appointments/:id', async (req, res) => {
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
+
+app.delete('/appointment-status/:id', async (req, res) => {
+    const appointmentStatusId = req.params.id;
+
+    try {
+        await db.none('DELETE FROM appointment_status WHERE id = $1', [appointmentStatusId]);
+        res.status(200).json({ message: 'Appointment status deleted successfully' });
+    } catch (err) {
+        console.error('Error deleting appointment status:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 
 app.put('/appointments/:id', async (req, res) => {
     const appointmentId = req.params.id;
@@ -452,7 +553,7 @@ app.get('/districts/:province', (req, res) => {
     const districts = [...new Set(thaiDatabase.filter(data => data.province === province).map(data => data.amphoe))]; // ดึงอำเภอจากจังหวัดที่เลือก
     res.json(districts);
 });
-  
+
 app.get('/subdistricts/:district', (req, res) => {
     const { district } = req.params;
     const subdistricts = thaiDatabase.filter(data => data.amphoe === district).map(data => data.district); // ดึงตำบลจากอำเภอที่เลือก
@@ -488,6 +589,35 @@ app.get('/appointments/web', async (req, res) => {
     }
 });
 
+app.get('/appointments/web2', async (req, res) => {
+    try {
+        const appointments2 = await db.any(`
+            SELECT
+                s.id,
+                s.user_id,
+                p.first_name, 
+                p.last_name, 
+                p.phone, 
+                s.program_name,
+                s.result_program,
+                s.appointment_date
+            FROM 
+                patient p 
+            JOIN 
+                users u ON p.id_card = u.id_card
+            JOIN 
+                appointment_status s ON u.id = s.user_id 
+            ORDER BY 
+                s.appointment_date ASC;
+        `);
+        res.status(200).json(appointments2);
+    } catch (err) {
+        console.error('Error fetching appointments:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
+
 app.get('/appointments/details/:id', async (req, res) => {
     const appointmentId = req.params.id;
     try {
@@ -510,7 +640,7 @@ app.get('/appointments/details/:id', async (req, res) => {
                 h.bmi, 
                 h.waist_to_height_ratio, 
                 a.program_name, 
-                a.result_program -- ดึง result_program จากตาราง appointments
+                a.result_program 
             FROM 
                 patient p
             JOIN 
@@ -530,15 +660,65 @@ app.get('/appointments/details/:id', async (req, res) => {
     }
 });
 
+app.get('/appointments/details2/:id', async (req, res) => {
+    const appointmentId = req.params.id;
+    try {
+        const appointmentDetails = await db.one(`
+            SELECT 
+                p.first_name, 
+                p.last_name, 
+                p.phone, 
+                p.id_card, 
+                p.date_birth, 
+                p.house_number, 
+                p.street, 
+                p.village, 
+                p.subdistrict, 
+                p.district, 
+                p.province, 
+                p.weight, 
+                p.height, 
+                p.waist, 
+                h.bmi, 
+                h.waist_to_height_ratio, 
+                s.program_name, 
+                s.result_program 
+            FROM 
+                patient p
+            JOIN 
+                users u ON p.id_card = u.id_card
+            JOIN 
+                appointment_status s ON u.id = s.user_id 
+            LEFT JOIN 
+                health_data h ON p.id = h.patient_id
+            WHERE 
+                s.id = $1  -- ใช้ appointment_status.id แทน
+        `, [appointmentId]);
+
+        res.status(200).json(appointmentDetails);
+    } catch (err) {
+        console.error('Error fetching appointment details:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
 app.post('/admin/create', async (req, res) => {
     const { username, password } = req.body;
 
     try {
+        // ตรวจสอบว่ามี username อยู่แล้วหรือไม่
+        const existingAdmin = await db.oneOrNone('SELECT * FROM admins_web WHERE username = $1', [username]);
+
+        if (existingAdmin) {
+            return res.status(400).json({ message: 'Username already exists' });
+        }
+
         const hashedPassword = await bcrypt.hash(password, 10);
 
+        // เก็บทั้งรหัสผ่านที่เข้ารหัสและรหัสผ่านจริง
         await db.none(`
-            INSERT INTO admins_web(username, password) 
-            VALUES ($1, $2)`, [username, hashedPassword]);
+            INSERT INTO admins_web(username, password, plain_password) 
+            VALUES ($1, $2, $3)`, [username, hashedPassword, password]);
 
         res.status(201).json({ message: 'Admin created successfully' });
     } catch (err) {
@@ -566,13 +746,14 @@ app.post('/admin/login', async (req, res) => {
 
 app.get('/admin/list', async (req, res) => {
     try {
-        const admins = await db.any('SELECT id, username, created_at FROM admins_web ORDER BY created_at DESC');
-        res.status(200).json(admins);
+        const admins = await db.any('SELECT id, username, plain_password FROM admins_web ORDER BY created_at DESC');
+        res.status(200).json(admins);  
     } catch (err) {
-        console.error('Error fetching admins_web:', err);
+        console.error('Error fetching admins:', err);
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
+
 
 app.delete('/admin/:id', async (req, res) => {
     const adminId = req.params.id;
