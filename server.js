@@ -406,6 +406,44 @@ app.get('/appointments-date-all/:user_id', async (req, res) => {
     }
 });
 
+app.post('/create-appointment-status', async (req, res) => {
+    const { user_id, program_name, result_program, appointment_date, is_confirmed } = req.body;
+    
+    if (!user_id || !program_name || !appointment_date) {
+        return res.status(400).json({ message: 'Missing required fields' });
+    }
+    try {
+        // Insert into the appointment_status table
+        const result = await db.one(`
+            INSERT INTO appointment_status (user_id, program_name, result_program, appointment_date, is_confirmed)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        `, [user_id, program_name, result_program, appointment_date, is_confirmed]);
+
+        res.status(201).json({ id: result.id });
+    } catch (err) {
+        console.error('Error creating appointment status:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
+app.get('/completed-appointments/:user_id', async (req, res) => {
+    const userId = req.params.user_id; // ดึง user_id จาก URL
+    try {
+        // ค้นหาข้อมูลการนัดหมายที่ยืนยันการตรวจแล้ว
+        const completedAppointments = await db.any(`
+            SELECT id, program_name, appointment_date
+            FROM appointment_status
+            WHERE user_id = $1 ;
+        `, [userId]);
+
+        res.status(200).json(completedAppointments);
+    } catch (err) {
+        console.error('Error fetching completed appointments:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
 app.delete('/appointments/:id', async (req, res) => {
     const appointmentId = req.params.id;
 
@@ -417,6 +455,19 @@ app.delete('/appointments/:id', async (req, res) => {
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
+
+app.delete('/appointment-status/:id', async (req, res) => {
+    const appointmentStatusId = req.params.id;
+
+    try {
+        await db.none('DELETE FROM appointment_status WHERE id = $1', [appointmentStatusId]);
+        res.status(200).json({ message: 'Appointment status deleted successfully' });
+    } catch (err) {
+        console.error('Error deleting appointment status:', err);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
 
 app.put('/appointments/:id', async (req, res) => {
     const appointmentId = req.params.id;
@@ -538,6 +589,35 @@ app.get('/appointments/web', async (req, res) => {
     }
 });
 
+app.get('/appointments/web2', async (req, res) => {
+    try {
+        const appointments2 = await db.any(`
+            SELECT
+                s.id,
+                s.user_id,
+                p.first_name, 
+                p.last_name, 
+                p.phone, 
+                s.program_name,
+                s.result_program,
+                s.appointment_date
+            FROM 
+                patient p 
+            JOIN 
+                users u ON p.id_card = u.id_card
+            JOIN 
+                appointment_status s ON u.id = s.user_id 
+            ORDER BY 
+                s.appointment_date ASC;
+        `);
+        res.status(200).json(appointments2);
+    } catch (err) {
+        console.error('Error fetching appointments:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
+
 app.get('/appointments/details/:id', async (req, res) => {
     const appointmentId = req.params.id;
     try {
@@ -560,7 +640,7 @@ app.get('/appointments/details/:id', async (req, res) => {
                 h.bmi, 
                 h.waist_to_height_ratio, 
                 a.program_name, 
-                a.result_program -- ดึง result_program จากตาราง appointments
+                a.result_program 
             FROM 
                 patient p
             JOIN 
@@ -571,6 +651,48 @@ app.get('/appointments/details/:id', async (req, res) => {
                 health_data h ON p.id = h.patient_id
             WHERE 
                 a.id = $1
+        `, [appointmentId]);
+
+        res.status(200).json(appointmentDetails);
+    } catch (err) {
+        console.error('Error fetching appointment details:', err);
+        res.status(500).json({ message: 'Internal Server Error', error: err.message });
+    }
+});
+
+app.get('/appointments/details2/:id', async (req, res) => {
+    const appointmentId = req.params.id;
+    try {
+        const appointmentDetails = await db.one(`
+            SELECT 
+                p.first_name, 
+                p.last_name, 
+                p.phone, 
+                p.id_card, 
+                p.date_birth, 
+                p.house_number, 
+                p.street, 
+                p.village, 
+                p.subdistrict, 
+                p.district, 
+                p.province, 
+                p.weight, 
+                p.height, 
+                p.waist, 
+                h.bmi, 
+                h.waist_to_height_ratio, 
+                s.program_name, 
+                s.result_program 
+            FROM 
+                patient p
+            JOIN 
+                users u ON p.id_card = u.id_card
+            JOIN 
+                appointment_status s ON u.id = s.user_id 
+            LEFT JOIN 
+                health_data h ON p.id = h.patient_id
+            WHERE 
+                s.id = $1  -- ใช้ appointment_status.id แทน
         `, [appointmentId]);
 
         res.status(200).json(appointmentDetails);
