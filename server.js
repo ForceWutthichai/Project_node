@@ -9,10 +9,44 @@ const thaiDatabase = require('./thai_database.json');
 const app = express();
 const port = 3000;
 
+const WebSocket = require('ws');
+const wsServer = new WebSocket.Server({ port: 8080 });
+const clients = {};
 
 app.use(cors());
 app.use(bodyParser.json());
 app.use(express.json());
+
+wsServer.on('connection', (ws, req) => {
+    const userId = req.url.split('/').pop();  // ดึง user ID จาก URL
+    clients[userId] = ws;
+
+    ws.on('close', () => {
+        delete clients[userId]; // ลบการเชื่อมต่อเมื่อปิด
+    });
+});
+
+// ฟังก์ชันส่งการแจ้งเตือน
+function sendNotification(userId, message) {
+    if (clients[userId]) {
+        clients[userId].send(JSON.stringify({ notification: message }));
+    } else {
+        console.log(`User ${userId} not connected`);
+    }
+}
+
+// ตรวจสอบการนัดหมายที่จะถึงในทุกๆ ชั่วโมง
+setInterval(async () => {
+    const upcomingAppointments = await db.any(`
+        SELECT user_id, program_name, appointment_date
+        FROM appointments
+        WHERE appointment_date::date = (NOW() + INTERVAL '1 day')::date
+    `);
+
+    upcomingAppointments.forEach(appointment => {
+        sendNotification(appointment.user_id, `คุณมีการนัดหมาย ${appointment.program_name} ที่จะถึงในวันพรุ่งนี้`);
+    });
+}, 3600000);
 
 app.get('/health', async (req, res) => {
     try {
