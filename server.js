@@ -12,6 +12,7 @@ const port = 3000;
 const WebSocket = require('ws');
 const wsServer = new WebSocket.Server({ port: 8080 });
 const clients = {};
+const moment = require('moment');
 
 app.use(cors());
 app.use(bodyParser.json());
@@ -703,7 +704,7 @@ app.get('/appointments/details2/:id', async (req, res) => {
 });
 
 app.post('/admin/create', async (req, res) => {
-    const { username, password } = req.body;
+    const { title_name, first_name, last_name, username, password } = req.body;
 
     try {
         // ตรวจสอบว่ามี username อยู่แล้วหรือไม่
@@ -715,10 +716,11 @@ app.post('/admin/create', async (req, res) => {
 
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // เก็บทั้งรหัสผ่านที่เข้ารหัสและรหัสผ่านจริง
+        // เก็บทั้งรหัสผ่านที่เข้ารหัสและรหัสผ่านจริง พร้อมข้อมูลอื่นๆ
         await db.none(`
-            INSERT INTO admins_web(username, password, plain_password) 
-            VALUES ($1, $2, $3)`, [username, hashedPassword, password]);
+            INSERT INTO admins_web (title_name, first_name, last_name, username, password, plain_password) 
+            VALUES ($1, $2, $3, $4, $5, $6)`, 
+            [title_name, first_name, last_name, username, hashedPassword, password]);
 
         res.status(201).json({ message: 'Admin created successfully' });
     } catch (err) {
@@ -746,7 +748,11 @@ app.post('/admin/login', async (req, res) => {
 
 app.get('/admin/list', async (req, res) => {
     try {
-        const admins = await db.any('SELECT id, username, plain_password FROM admins_web ORDER BY created_at DESC');
+        const admins = await db.any(`
+            SELECT id, title_name, first_name, last_name, username, plain_password 
+            FROM admins_web 
+            ORDER BY created_at DESC
+        `);
         res.status(200).json(admins);  
     } catch (err) {
         console.error('Error fetching admins:', err);
